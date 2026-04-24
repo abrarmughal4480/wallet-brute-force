@@ -1,0 +1,23 @@
+{
+  "name": "wallet-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Safe Trust Wallet launcher automation",
+  "scripts": {
+    "edge:9222": "powershell -ExecutionPolicy Bypass -File ./start-edge-9222.ps1",
+    "chrome:9222": "powershell -ExecutionPolicy Bypass -File ./start-chrome-9222.ps1",
+    "verify": "powershell -ExecutionPolicy Bypass -File ./verify-edge-port.ps1",
+    "wallet": "node launch-trust-wallet.js",
+    "metamask": "node launch-metamask.js",
+    "okx": "pnpm run chrome:9222 && node launch-okx-wallet.js",
+    "start": "pnpm run chrome:9222 && pnpm run wallet",
+    "start:metamask": "pnpm run chrome:9222 && pnpm run metamask",
+    "start:okx": "pnpm run okx"
+  },
+  "dependencies": {
+    "axios": "^1.14.0",
+    "bip39": "^3.1.0",
+    "dotenv": "^17.3.1",
+    "playwright": "^1.52.0"
+  }
+}
