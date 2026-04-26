@@ -1172,6 +1172,7 @@ async function findOkxPasswordGate(page) {
 	const passwordSelector = [
 		'input[data-testid="okd-input"][type="password"]',
 		'input[type="password"][placeholder*="Enter your password"]',
+		'input.okui-input-input[type="password"]',
 	].join(", ");
 
 	const pageInput = page.locator(passwordSelector).first();
@@ -1191,6 +1192,57 @@ async function findOkxPasswordGate(page) {
 	return null;
 }
 
+async function fillOkxPasswordInput(input, password) {
+	await input.fill(password).catch(async () => {
+		await input.click({ timeout: 1500 }).catch(() => {});
+		await input.press("Control+a").catch(() => {});
+		await input.type(password, { delay: 0 }).catch(() => {});
+	});
+
+	let currentValue = await input.inputValue().catch(() => "");
+	if (currentValue !== password) {
+		await input.evaluate((element, value) => {
+			const nativeInputValueSetter =
+				Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+			nativeInputValueSetter?.call(element, value);
+			element.dispatchEvent(new Event("input", { bubbles: true }));
+			element.dispatchEvent(new Event("change", { bubbles: true }));
+			element.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "4" }));
+			element.dispatchEvent(new Event("blur", { bubbles: true }));
+		}, password);
+	}
+
+	currentValue = await input.inputValue().catch(() => "");
+	return currentValue === password;
+}
+
+async function waitForUnlockEnabled(scope, timeoutMs = 5000) {
+	const buttonLocator = scope
+		.locator('button[data-testid="okd-button"]:has-text("Unlock")')
+		.first();
+
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if ((await buttonLocator.count().catch(() => 0)) > 0) {
+			const enabled = await buttonLocator
+				.evaluate((button) => {
+					const disabledAttr = button.hasAttribute("disabled");
+					const ariaDisabled = button.getAttribute("aria-disabled") === "true";
+					return !disabledAttr && !ariaDisabled;
+				})
+				.catch(() => false);
+
+			if (enabled) {
+				return buttonLocator;
+			}
+		}
+
+		await delay(100);
+	}
+
+	return null;
+}
+
 async function handleOkxPasswordGateIfPresent(page, url) {
 	await page.waitForLoadState("domcontentloaded").catch(() => {});
 	const gate = await findOkxPasswordGate(page);
@@ -1200,23 +1252,31 @@ async function handleOkxPasswordGateIfPresent(page, url) {
 
 	const { scope, ownerPage, input } = gate;
 	await ownerPage.bringToFront().catch(() => {});
-	await input.fill(OKX_PASSWORD_AUTOFILL).catch(async () => {
-		await input.click({ timeout: 1500 }).catch(() => {});
-		await input.press("Control+a").catch(() => {});
-		await input.type(OKX_PASSWORD_AUTOFILL, { delay: 0 }).catch(() => {});
-	});
+
+	const passwordFilled = await fillOkxPasswordInput(input, OKX_PASSWORD_AUTOFILL);
+	if (!passwordFilled) {
+		throw new Error("OKX password field found but could not set password value.");
+	}
 
 	const unlockButton = scope
 		.getByRole("button", { name: /unlock|confirm|continue|log in|login/i })
 		.first();
-	const buttonVisible = await unlockButton.isVisible().catch(() => false);
-	if (buttonVisible) {
-		const buttonEnabled = await unlockButton.isEnabled().catch(() => true);
-		if (buttonEnabled) {
-			await unlockButton.click({ timeout: 2000 }).catch(() => {});
-		}
+
+	const enabledUnlock = await waitForUnlockEnabled(scope, 6000);
+	if (enabledUnlock) {
+		await enabledUnlock.click({ timeout: 2500 }).catch(() => {});
 	} else {
-		await input.press("Enter").catch(() => {});
+		const buttonVisible = await unlockButton.isVisible().catch(() => false);
+		if (buttonVisible) {
+			const buttonEnabled = await unlockButton.isEnabled().catch(() => true);
+			if (buttonEnabled) {
+				await unlockButton.click({ timeout: 2000 }).catch(() => {});
+			} else {
+				await input.press("Enter").catch(() => {});
+			}
+		} else {
+			await input.press("Enter").catch(() => {});
+		}
 	}
 
 	console.log(`OKX password screen detected. Auto-filled password and waiting ${OKX_PASSWORD_WAIT_MS}ms.`);
