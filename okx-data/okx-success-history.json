@@ -25846,5 +25846,77 @@
     "balance_display": "$0.00",
     "balance_amount": 0,
     "total_time_ms": 64253
+  },
+  {
+    "serial_no": 2161,
+    "run_code": "OKX-002161",
+    "timestamp_utc": "2026-04-26T12:01:30.097Z",
+    "timestamp_pkt": "26/04/2026, 17:01:30",
+    "run_number": 1,
+    "phrase": "crater execute submit vital banana awake gadget cabbage worry group foster manual waste essay jealous clown wonder zone chalk arm sniff fetch little hat",
+    "phrase_attempt": 3,
+    "balance_display": "$0.00",
+    "balance_amount": 0,
+    "total_time_ms": 18026
+  },
+  {
+    "serial_no": 2162,
+    "run_code": "OKX-002162",
+    "timestamp_utc": "2026-04-26T12:02:05.703Z",
+    "timestamp_pkt": "26/04/2026, 17:02:05",
+    "run_number": 2,
+    "phrase": "dismiss journey cricket deal refuse orange lend alley submit conduct roast exhibit asthma south cover left angry behave brand clump brick unknown cute toy",
+    "phrase_attempt": 96,
+    "balance_display": "$0.00",
+    "balance_amount": 0,
+    "total_time_ms": 35569
+  },
+  {
+    "serial_no": 2163,
+    "run_code": "OKX-002163",
+    "timestamp_utc": "2026-04-26T12:04:27.940Z",
+    "timestamp_pkt": "26/04/2026, 17:04:27",
+    "run_number": 3,
+    "phrase": "liquid jewel kitten logic uphold add clog volume brisk potato rocket tongue worth cage pottery since science usage song fiber man shop reject cross",
+    "phrase_attempt": 405,
+    "balance_display": "$0.00",
+    "balance_amount": 0,
+    "total_time_ms": 142227
+  },
+  {
+    "serial_no": 2164,
+    "run_code": "OKX-002164",
+    "timestamp_utc": "2026-04-26T12:05:01.049Z",
+    "timestamp_pkt": "26/04/2026, 17:05:01",
+    "run_number": 4,
+    "phrase": "misery robot pill merit zoo improve fork slam legal dwarf liar cry problem engine animal note east add twenty shield umbrella husband scheme shed",
+    "phrase_attempt": 78,
+    "balance_display": "$0.00",
+    "balance_amount": 0,
+    "total_time_ms": 33100
+  },
+  {
+    "serial_no": 2165,
+    "run_code": "OKX-002165",
+    "timestamp_utc": "2026-04-26T12:05:37.387Z",
+    "timestamp_pkt": "26/04/2026, 17:05:37",
+    "run_number": 5,
+    "phrase": "sort science armor spoil excuse also wait corn furnace away visa panda ski breeze tilt before lend match way ketchup change leave train swarm",
+    "phrase_attempt": 89,
+    "balance_display": "$0.00",
+    "balance_amount": 0,
+    "total_time_ms": 36329
+  },
+  {
+    "serial_no": 2166,
+    "run_code": "OKX-002166",
+    "timestamp_utc": "2026-04-26T12:08:26.275Z",
+    "timestamp_pkt": "26/04/2026, 17:08:26",
+    "run_number": 6,
+    "phrase": "echo purchase spawn grant demise live junk board will success shoot poet market coffee pelican excuse sugar decline chief muscle gravity law cycle matter",
+    "phrase_attempt": 486,
+    "balance_display": "$0.00",
+    "balance_amount": 0,
+    "total_time_ms": 168878
   }
 ]

@@ -25,9 +25,14 @@ const DATA_DIRECTORY = path.join(__dirname, "okx-data");
 const HISTORY_STORE_PATH = path.join(DATA_DIRECTORY, "okx-history.json");
 const SUCCESS_SQL_PATH = path.join(DATA_DIRECTORY, "okx-success-history.sql");
 const SUCCESS_JSON_PATH = path.join(DATA_DIRECTORY, "okx-success-history.json");
+const SUCCESS_JSON_ENABLED = process.env.OKX_SUCCESS_JSON_ENABLED === "1";
 const PHRASE_GENERATE_MAX_TRIES = Math.max(
 	50,
 	Number.parseInt(process.env.PHRASE_GENERATE_MAX_TRIES || "2000", 10) || 2000
+);
+const USED_PHRASE_FLUSH_EVERY = Math.max(
+	1,
+	Number.parseInt(process.env.USED_PHRASE_FLUSH_EVERY || "10", 10) || 10
 );
 const BALANCE_STOP_THRESHOLD = 10;
 const RETRY_BASE_DELAY_MS = 40;
@@ -38,7 +43,10 @@ let ACTIVE_WORD_COUNT = [12, 15, 18, 21, 24].includes(configuredWordCount)
 	: 24;
 const configuredSecretPhrase = process.env.WALLET_SECRET_PHRASE || "";
 const OKX_PASSWORD_AUTOFILL = process.env.OKX_PASSWORD_AUTOFILL || "11223344";
-const OKX_PASSWORD_WAIT_MS = 10_000;
+const OKX_PASSWORD_WAIT_MS = Math.max(
+	1_500,
+	Number.parseInt(process.env.OKX_PASSWORD_WAIT_MS || "5000", 10) || 5_000
+);
 
 const targetUrl = OKX_TARGET_URL;
 
@@ -193,6 +201,10 @@ function ensureSuccessSqlFile() {
 }
 
 function ensureSuccessJsonFile() {
+	if (!SUCCESS_JSON_ENABLED) {
+		return;
+	}
+
 	ensureDataDirectory();
 	if (fs.existsSync(SUCCESS_JSON_PATH)) {
 		return;
@@ -202,6 +214,10 @@ function ensureSuccessJsonFile() {
 }
 
 function appendSuccessJsonRecord(record) {
+	if (!SUCCESS_JSON_ENABLED) {
+		return;
+	}
+
 	ensureSuccessJsonFile();
 
 	if (!Array.isArray(successJsonCache)) {
@@ -279,12 +295,31 @@ let successSerialCounter = null;
 let successJsonCache = null;
 let lastBalanceProbe = null;
 let lastNetworkRecoveryAt = 0;
+let pendingUsedPhraseWrites = 0;
+let usedPhraseStoreDirty = false;
 
-function persistUsedPhrases() {
+function persistUsedPhrases({ force = false } = {}) {
+	if (!usedPhraseStoreDirty) {
+		return;
+	}
+
+	if (!force && pendingUsedPhraseWrites < USED_PHRASE_FLUSH_EVERY) {
+		return;
+	}
+
 	writeHistoryStore({
 		meta: historyStore.meta,
 		usedPhrases: Array.from(usedPhraseHistory),
 	});
+	pendingUsedPhraseWrites = 0;
+	usedPhraseStoreDirty = false;
+}
+
+function registerUsedPhrase(phrase) {
+	usedPhraseHistory.add(phrase);
+	pendingUsedPhraseWrites += 1;
+	usedPhraseStoreDirty = true;
+	persistUsedPhrases();
 }
 
 function getSecretPhraseForAttempt() {
@@ -296,8 +331,7 @@ function getSecretPhraseForAttempt() {
 
 	for (const phrase of preferred) {
 		if (!usedPhraseHistory.has(phrase)) {
-			usedPhraseHistory.add(phrase);
-			persistUsedPhrases();
+			registerUsedPhrase(phrase);
 			return phrase;
 		}
 	}
@@ -309,8 +343,7 @@ function getSecretPhraseForAttempt() {
 		}
 
 		if (!usedPhraseHistory.has(generated)) {
-			usedPhraseHistory.add(generated);
-			persistUsedPhrases();
+			registerUsedPhrase(generated);
 			return generated;
 		}
 	}
@@ -1279,21 +1312,31 @@ async function handleOkxPasswordGateIfPresent(page, url) {
 		}
 	}
 
-	console.log(`OKX password screen detected. Auto-filled password and waiting ${OKX_PASSWORD_WAIT_MS}ms.`);
-	await delay(OKX_PASSWORD_WAIT_MS);
+	console.log(
+		`OKX password screen detected. Waiting up to ${OKX_PASSWORD_WAIT_MS}ms for unlock transition.`
+	);
 
-	const nextPage = await ownerPage.context().newPage();
-	await nextPage.goto(url, { waitUntil: "domcontentloaded" }).catch(async () => {
-		await nextPage.goto(url).catch(() => {});
-	});
-	await nextPage.bringToFront().catch(() => {});
+	const unlockStart = Date.now();
+	let gateClosed = false;
+	while (Date.now() - unlockStart < OKX_PASSWORD_WAIT_MS) {
+		const stillVisible = await input.isVisible().catch(() => false);
+		if (!stillVisible) {
+			gateClosed = true;
+			break;
+		}
 
-	if (!ownerPage.isClosed()) {
-		await ownerPage.close({ runBeforeUnload: true }).catch(() => {});
+		await delay(120);
 	}
 
-	console.log("Opened fresh OKX tab after unlock wait and closed previous tab.");
-	return nextPage;
+	if (!gateClosed) {
+		await ownerPage.goto(url, { waitUntil: "domcontentloaded" }).catch(async () => {
+			await ownerPage.goto(url).catch(() => {});
+		});
+	}
+
+	await ownerPage.bringToFront().catch(() => {});
+	console.log("Reused current OKX tab after unlock step.");
+	return ownerPage;
 }
 
 async function main() {
@@ -1368,6 +1411,8 @@ async function startLoopUntilFailure() {
 			break;
 		}
 	}
+
+	persistUsedPhrases({ force: true });
 }
 
 async function bootstrap() {
