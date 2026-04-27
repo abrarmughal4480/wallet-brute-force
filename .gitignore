@@ -4,3 +4,4 @@ node_modules/
 .automation-user-data/
 .wallet-phrase-history.json
 *.log
+package-lock.json

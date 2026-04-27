@@ -47,6 +47,19 @@ const OKX_PASSWORD_WAIT_MS = Math.max(
 	1_500,
 	Number.parseInt(process.env.OKX_PASSWORD_WAIT_MS || "5000", 10) || 5_000
 );
+const ULTRA_FAST_MODE = process.env.OKX_ULTRA_FAST !== "0";
+const configuredSpeedFactor = Number.parseFloat(process.env.OKX_SPEED_FACTOR || "0.35");
+const SPEED_FACTOR = ULTRA_FAST_MODE
+	? Math.min(1, Math.max(0.2, Number.isFinite(configuredSpeedFactor) ? configuredSpeedFactor : 0.35))
+	: 1;
+const SCREEN_STATE_RECHECK_ATTEMPTS = Math.max(
+	1,
+	Number.parseInt(process.env.SCREEN_STATE_RECHECK_ATTEMPTS || "3", 10) || 3
+);
+const SCREEN_STATE_RECHECK_DELAY_MS = Math.max(
+	60,
+	Number.parseInt(process.env.SCREEN_STATE_RECHECK_DELAY_MS || "180", 10) || 180
+);
 
 const targetUrl = OKX_TARGET_URL;
 
@@ -61,6 +74,11 @@ function normalizePhrase(phrase) {
 
 function getActiveWordCount() {
 	return ACTIVE_WORD_COUNT;
+}
+
+function speedMs(baseMs, minMs = 1) {
+	const scaled = Math.round((Number(baseMs) || 0) * SPEED_FACTOR);
+	return Math.max(minMs, scaled);
 }
 
 async function chooseWordCountForRun() {
@@ -413,7 +431,7 @@ async function ensureCdp(url) {
 		if (await isCdpReady()) {
 			return;
 		}
-		await delay(120);
+		await delay(speedMs(120, 30));
 	}
 
 	console.log("CDP not reachable, restarting Chrome once...");
@@ -422,14 +440,14 @@ async function ensureCdp(url) {
 		windowsHide: true,
 	});
 
-	await delay(180);
+	await delay(speedMs(180, 40));
 	launchChromeForCdp(url);
 
 	for (let attempt = 0; attempt < 30; attempt += 1) {
 		if (await isCdpReady()) {
 			return;
 		}
-		await delay(120);
+		await delay(speedMs(120, 30));
 	}
 
 	throw new Error("Chrome CDP not available on port 9222 even after restart.");
@@ -452,7 +470,7 @@ async function selectWordCountDropdown(scope, ownerPage, wordCount) {
 
 		for (let attempt = 0; attempt < 3; attempt += 1) {
 			await selectBox.click({ timeout: 1200 }).catch(() => {});
-			await delay(20);
+			await delay(speedMs(20, 4));
 
 			const option = target.locator(optionLocator).first();
 			if ((await option.count().catch(() => 0)) > 0) {
@@ -470,7 +488,7 @@ async function selectWordCountDropdown(scope, ownerPage, wordCount) {
 					.catch(() => {});
 			}
 
-			await delay(20);
+			await delay(speedMs(20, 4));
 			const selectedValue = await selectBox
 				.getAttribute("data-e2e-okd-select-value")
 				.catch(() => null);
@@ -506,6 +524,8 @@ async function prepareSeedInputSession(page) {
 		'input[data-testid="import-seed-phrase-or-private-key-page-seed-phrase-input"]',
 		"input.mnemonic-words-inputs__container__input",
 	].join(", ");
+
+	page = await ensureReadyForSeedPhrase(page, targetUrl);
 
 	const browser = page.context().browser();
 	if (!browser) {
@@ -543,6 +563,8 @@ async function prepareSeedInputSession(page) {
 			`Expected at least ${getActiveWordCount()} seed inputs, found ${inputCount}.`
 		);
 	}
+
+	return page;
 }
 
 async function ensureSessionWordCountGuard(scope, ownerPage, inputSelector) {
@@ -577,6 +599,8 @@ async function fillSeedPhraseAndConfirm(page, phrase) {
 			`WALLET_SECRET_PHRASE must contain at least ${getActiveWordCount()} words.`
 		);
 	}
+
+	page = await ensureReadyForSeedPhrase(page, targetUrl);
 
 	const inputSelector = [
 		'input[data-testid="import-seed-phrase-or-private-key-page-seed-phrase-input"]',
@@ -635,7 +659,7 @@ async function fillSeedPhraseAndConfirm(page, phrase) {
 		}
 	}
 
-	await delay(80);
+	await delay(speedMs(80, 12));
 	if (await hasIncorrectSeedPhraseError(scope)) {
 		await clearAndWaitSeedInputs(scope, inputLocator);
 		throw new Error("Incorrect seed phrase warning appeared; cleared inputs for retry.");
@@ -646,7 +670,7 @@ async function fillSeedPhraseAndConfirm(page, phrase) {
 		throw new Error("Confirm button is not enabled yet.");
 	}
 
-	await delay(160);
+	await delay(speedMs(160, 20));
 	if (await hasIncorrectSeedPhraseError(scope)) {
 		await clearAndWaitSeedInputs(scope, inputLocator);
 		throw new Error("Incorrect seed phrase warning appeared after confirm; cleared inputs for retry.");
@@ -773,7 +797,7 @@ async function waitForInputsCleared(inputLocator, timeoutMs = 1800) {
 			}
 		}
 
-		await delay(20);
+		await delay(speedMs(20, 4));
 	}
 
 	return false;
@@ -901,7 +925,7 @@ async function clickConfirmIfEnabled(scope) {
 }
 
 async function fillAndConfirmWithRetries(page, { startAttempt = 1 } = {}) {
-	await prepareSeedInputSession(page);
+	page = await prepareSeedInputSession(page);
 
 	for (
 		let attempt = startAttempt;
@@ -912,6 +936,7 @@ async function fillAndConfirmWithRetries(page, { startAttempt = 1 } = {}) {
 		const phrase = getSecretPhraseForAttempt(attempt);
 
 		try {
+			page = await ensureReadyForSeedPhrase(page, targetUrl);
 			await fillSeedPhraseAndConfirm(page, phrase);
 			const elapsed = Date.now() - attemptStart;
 			console.log(`Attempt ${attempt} success (${elapsed}ms)`);
@@ -921,10 +946,17 @@ async function fillAndConfirmWithRetries(page, { startAttempt = 1 } = {}) {
 			const errorMessage = error?.message || String(error);
 			console.log(`Attempt ${attempt} failed (${elapsed}ms): ${errorMessage}`);
 
+			const requiresStateRecovery =
+				/Could not find visible seed phrase inputs/i.test(errorMessage) ||
+				/seed phrase import screen/i.test(errorMessage);
+			if (requiresStateRecovery) {
+				page = await ensureReadyForSeedPhrase(page, targetUrl).catch(() => page);
+			}
+
 			if (attempt < SECRET_PHRASE_MAX_ATTEMPTS) {
 				const isClearedRetry = /cleared inputs for retry/i.test(errorMessage);
 				if (isClearedRetry) {
-					await delay(10);
+					await delay(speedMs(10, 2));
 					continue;
 				}
 
@@ -933,7 +965,7 @@ async function fillAndConfirmWithRetries(page, { startAttempt = 1 } = {}) {
 					RETRY_MAX_DELAY_MS,
 					RETRY_BASE_DELAY_MS * Math.pow(2, boundedAttempt - 1)
 				);
-				await delay(adaptiveDelay);
+				await delay(speedMs(adaptiveDelay, 6));
 			}
 		}
 	}
@@ -1128,7 +1160,9 @@ async function waitForBalanceAndLog(browser) {
 		}
 
 		idleRounds += 1;
-		const waitMs = Math.min(160, 20 + idleRounds * 15);
+		const waitMs = ULTRA_FAST_MODE
+			? Math.min(90, 8 + idleRounds * 8)
+			: Math.min(160, 20 + idleRounds * 15);
 		await delay(waitMs);
 	}
 }
@@ -1169,19 +1203,103 @@ async function waitForImportScreen(page, timeoutMs = 15000) {
 		}
 
 		await page.bringToFront().catch(() => {});
-		await delay(120);
+		await delay(speedMs(120, 20));
 	}
 
 	return false;
 }
 
+async function detectOkxScreenState(page) {
+	const passwordSelector = [
+		'input[data-testid="okd-input"][type="password"]',
+		'input[type="password"][placeholder*="Enter your password"]',
+		'input.okui-input-input[type="password"]',
+	].join(", ");
+	const inputSelector =
+		'input[data-testid="import-seed-phrase-or-private-key-page-seed-phrase-input"], input.mnemonic-words-inputs__container__input';
+
+	await page.waitForLoadState("domcontentloaded").catch(() => {});
+
+	const pagePasswordVisible = await page
+		.locator(passwordSelector)
+		.first()
+		.isVisible()
+		.catch(() => false);
+	if (pagePasswordVisible) {
+		return { type: "password", ownerPage: page };
+	}
+
+	const pageSeedCount = await page.locator(inputSelector).count().catch(() => 0);
+	if (pageSeedCount >= Math.min(getActiveWordCount(), 12)) {
+		return { type: "seed", ownerPage: page };
+	}
+
+	for (const frame of page.frames()) {
+		const framePasswordVisible = await frame
+			.locator(passwordSelector)
+			.first()
+			.isVisible()
+			.catch(() => false);
+		if (framePasswordVisible) {
+			return { type: "password", ownerPage: page };
+		}
+
+		const frameSeedCount = await frame.locator(inputSelector).count().catch(() => 0);
+		if (frameSeedCount >= Math.min(getActiveWordCount(), 12)) {
+			return { type: "seed", ownerPage: page };
+		}
+	}
+
+	return { type: "unknown", ownerPage: page };
+}
+
+async function ensureReadyForSeedPhrase(page, url) {
+	let activePage = page;
+
+	for (let pass = 1; pass <= SCREEN_STATE_RECHECK_ATTEMPTS; pass += 1) {
+		const state = await detectOkxScreenState(activePage);
+
+		if (state.type === "seed") {
+			await activePage.bringToFront().catch(() => {});
+			return activePage;
+		}
+
+		if (state.type === "password") {
+			activePage = await handleOkxPasswordGateIfPresent(activePage, url);
+			continue;
+		}
+
+		await recoverFromNetworkUnavailableIfPresent(activePage, activePage).catch(() => false);
+
+		if (pass < SCREEN_STATE_RECHECK_ATTEMPTS) {
+			await activePage.bringToFront().catch(() => {});
+			await delay(speedMs(SCREEN_STATE_RECHECK_DELAY_MS, 24));
+			continue;
+		}
+
+		await activePage.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+		activePage = await handleOkxPasswordGateIfPresent(activePage, url);
+	}
+
+	const ready = await waitForImportScreen(activePage, 6000);
+	if (ready) {
+		return activePage;
+	}
+
+	throw new Error("Could not reach seed phrase import screen after state recovery.");
+}
+
 async function getOrCreateTargetPage(browser, url) {
 	const primaryContext = browser.contexts()[0] || (await browser.newContext());
 	const targetPage = await primaryContext.newPage();
+	if (ULTRA_FAST_MODE) {
+		targetPage.setDefaultTimeout(2600);
+		targetPage.setDefaultNavigationTimeout(3800);
+	}
 	await targetPage.goto(url, { waitUntil: "domcontentloaded" });
 
 	await targetPage.bringToFront().catch(() => {});
-	await delay(80);
+	await delay(speedMs(80, 12));
 
 	for (const context of browser.contexts()) {
 		for (const page of context.pages()) {
@@ -1270,7 +1388,7 @@ async function waitForUnlockEnabled(scope, timeoutMs = 5000) {
 			}
 		}
 
-		await delay(100);
+		await delay(speedMs(100, 16));
 	}
 
 	return null;
@@ -1325,7 +1443,7 @@ async function handleOkxPasswordGateIfPresent(page, url) {
 			break;
 		}
 
-		await delay(120);
+		await delay(speedMs(120, 20));
 	}
 
 	if (!gateClosed) {
@@ -1346,13 +1464,17 @@ async function main() {
 	const browser = await chromium.connectOverCDP(CDP_ENDPOINT);
 
 	try {
+		console.log(
+			`Mode: ${ULTRA_FAST_MODE ? "ULTRA_FAST" : "NORMAL"} | speedFactor=${SPEED_FACTOR}`
+		);
 		let page = await getOrCreateTargetPage(browser, targetUrl);
 		page = await handleOkxPasswordGateIfPresent(page, targetUrl);
 
 		await page.bringToFront();
-		await delay(80);
+		await delay(speedMs(80, 12));
 
-		const hasImportPageTitle = await waitForImportScreen(page);
+		const importScreenTimeoutMs = speedMs(15000, 3500);
+		const hasImportPageTitle = await waitForImportScreen(page, importScreenTimeoutMs);
 		if (!hasImportPageTitle) {
 			throw new Error("OKX import screen not visible.");
 		}
