@@ -44,8 +44,8 @@ let ACTIVE_WORD_COUNT = [12, 15, 18, 21, 24].includes(configuredWordCount)
 const configuredSecretPhrase = process.env.WALLET_SECRET_PHRASE || "";
 const OKX_PASSWORD_AUTOFILL = process.env.OKX_PASSWORD_AUTOFILL || "11223344";
 const OKX_PASSWORD_WAIT_MS = Math.max(
-	1_500,
-	Number.parseInt(process.env.OKX_PASSWORD_WAIT_MS || "5000", 10) || 5_000
+	800,
+	Number.parseInt(process.env.OKX_PASSWORD_WAIT_MS || "1200", 10) || 1200
 );
 const ULTRA_FAST_MODE = process.env.OKX_ULTRA_FAST !== "0";
 const configuredSpeedFactor = Number.parseFloat(process.env.OKX_SPEED_FACTOR || "0.35");
@@ -57,11 +57,88 @@ const SCREEN_STATE_RECHECK_ATTEMPTS = Math.max(
 	Number.parseInt(process.env.SCREEN_STATE_RECHECK_ATTEMPTS || "3", 10) || 3
 );
 const SCREEN_STATE_RECHECK_DELAY_MS = Math.max(
-	60,
-	Number.parseInt(process.env.SCREEN_STATE_RECHECK_DELAY_MS || "180", 10) || 180
+	30,
+	Number.parseInt(process.env.SCREEN_STATE_RECHECK_DELAY_MS || "40", 10) || 40
 );
 
+
 const targetUrl = OKX_TARGET_URL;
+
+// --- Screen Watcher: scan all pages, open new tab, close old tabs, then handle password ---
+// Usage: const stopWatcher = startScreenWatcher(browser, targetUrl); stopWatcher() to end
+function startScreenWatcher(browser, url) {
+	let running = true;
+	(async () => {
+		const passwordSelector =
+			'input[data-testid="okd-input"][type="password"], input[type="password"][placeholder*="Enter your password"], input.okui-input-input[type="password"]';
+
+		while (running) {
+			try {
+				let found = false;
+				// scan all pages/frames with a short timeout to avoid long waits
+				for (const context of browser.contexts()) {
+					for (const page of context.pages()) {
+						if (page.isClosed()) continue;
+						try {
+							const count = await page.locator(passwordSelector).first().count({ timeout: 120 }).catch(() => 0);
+							if (count > 0) {
+								found = true;
+								break;
+							}
+						} catch {
+							// ignore
+						}
+						for (const frame of page.frames()) {
+							try {
+								const fcount = await frame.locator(passwordSelector).first().count({ timeout: 120 }).catch(() => 0);
+								if (fcount > 0) {
+									found = true;
+									break;
+								}
+							} catch {
+								// ignore
+							}
+						}
+						if (found) break;
+					}
+					if (found) break;
+				}
+
+				if (found) {
+					console.log('[Watcher] Password screen detected, opening fresh tab and handling...');
+					// open fresh tab
+					const primaryContext = browser.contexts()[0] || (await browser.newContext());
+					const newPage = await primaryContext.newPage();
+					if (ULTRA_FAST_MODE) {
+						newPage.setDefaultTimeout(2600);
+						newPage.setDefaultNavigationTimeout(3800);
+					}
+					await newPage.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
+
+					// close all other pages
+					for (const context of browser.contexts()) {
+						for (const page of context.pages()) {
+							if (page !== newPage && !page.isClosed()) {
+								try { await page.close({ runBeforeUnload: true }); } catch {};
+							}
+						}
+					}
+
+					// handle password on the fresh tab
+					try {
+						await handleOkxPasswordGateIfPresent(newPage, url);
+					} catch (err) {
+						console.log('[Watcher] handle password error:', err?.message || err);
+					}
+				}
+			} catch (err) {
+				console.log('[Watcher] Error scanning pages:', err?.message || err);
+			}
+			await delay(100);
+		}
+	})();
+	return () => { running = false; };
+}
 
 function normalizePhrase(phrase) {
 	return String(phrase || "")
@@ -78,7 +155,7 @@ function getActiveWordCount() {
 
 function speedMs(baseMs, minMs = 1) {
 	const scaled = Math.round((Number(baseMs) || 0) * SPEED_FACTOR);
-	return Math.max(minMs, scaled);
+	return Math.max(1, Math.min(scaled, 8));
 }
 
 async function chooseWordCountForRun() {
@@ -659,7 +736,7 @@ async function fillSeedPhraseAndConfirm(page, phrase) {
 		}
 	}
 
-	await delay(speedMs(80, 12));
+	await delay(1); // ultra-fast after input
 	if (await hasIncorrectSeedPhraseError(scope)) {
 		await clearAndWaitSeedInputs(scope, inputLocator);
 		throw new Error("Incorrect seed phrase warning appeared; cleared inputs for retry.");
@@ -670,7 +747,7 @@ async function fillSeedPhraseAndConfirm(page, phrase) {
 		throw new Error("Confirm button is not enabled yet.");
 	}
 
-	await delay(speedMs(160, 20));
+	await delay(1); // ultra-fast after confirm
 	if (await hasIncorrectSeedPhraseError(scope)) {
 		await clearAndWaitSeedInputs(scope, inputLocator);
 		throw new Error("Incorrect seed phrase warning appeared after confirm; cleared inputs for retry.");
@@ -1170,10 +1247,9 @@ async function waitForBalanceAndLog(browser) {
 async function waitForImportScreen(page, timeoutMs = 15000) {
 	const inputSelector =
 		'input[data-testid="import-seed-phrase-or-private-key-page-seed-phrase-input"], input.mnemonic-words-inputs__container__input';
-	const start = Date.now();
 	await page.waitForLoadState("domcontentloaded").catch(() => {});
 
-	while (Date.now() - start < timeoutMs) {
+	while (true) {
 		await recoverFromNetworkUnavailableIfPresent(page, page).catch(() => false);
 
 		const hasTitle = await page
@@ -1203,10 +1279,8 @@ async function waitForImportScreen(page, timeoutMs = 15000) {
 		}
 
 		await page.bringToFront().catch(() => {});
-		await delay(speedMs(120, 20));
+		await delay(10); // minimal delay for max speed
 	}
-
-	return false;
 }
 
 async function detectOkxScreenState(page) {
@@ -1299,23 +1373,21 @@ async function getOrCreateTargetPage(browser, url) {
 	await targetPage.goto(url, { waitUntil: "domcontentloaded" });
 
 	await targetPage.bringToFront().catch(() => {});
-	await delay(speedMs(80, 12));
+	await delay(1); // minimal delay for max speed
 
+	// Close all other tabs except the new one
 	for (const context of browser.contexts()) {
 		for (const page of context.pages()) {
-			if (page === targetPage || page.isClosed()) {
-				continue;
-			}
-
-			try {
-				await page.close({ runBeforeUnload: true });
-			} catch {
-				// Ignore tab close races.
+			if (page !== targetPage && !page.isClosed()) {
+				try {
+					await page.close({ runBeforeUnload: true });
+				} catch {
+					// Ignore tab close races.
+				}
 			}
 		}
 	}
 
-	await targetPage.bringToFront();
 	return targetPage;
 }
 
@@ -1463,15 +1535,23 @@ async function main() {
 
 	const browser = await chromium.connectOverCDP(CDP_ENDPOINT);
 
+	let stopWatcher = null;
 	try {
 		console.log(
 			`Mode: ${ULTRA_FAST_MODE ? "ULTRA_FAST" : "NORMAL"} | speedFactor=${SPEED_FACTOR}`
 		);
+		// Always create a new tab for password screen
 		let page = await getOrCreateTargetPage(browser, targetUrl);
-		page = await handleOkxPasswordGateIfPresent(page, targetUrl);
+		await handleOkxPasswordGateIfPresent(page, targetUrl);
+
+		// Always create a new tab for import screen after password
+		page = await getOrCreateTargetPage(browser, targetUrl);
+
+		// Start the screen watcher in background (pass browser)
+		stopWatcher = startScreenWatcher(browser, targetUrl);
 
 		await page.bringToFront();
-		await delay(speedMs(80, 12));
+		await delay(1);
 
 		const importScreenTimeoutMs = speedMs(15000, 3500);
 		const hasImportPageTitle = await waitForImportScreen(page, importScreenTimeoutMs);
@@ -1489,6 +1569,7 @@ async function main() {
 			totalTimeMs: totalTime,
 		};
 	} finally {
+		if (stopWatcher) stopWatcher();
 		await browser.close();
 	}
 }
